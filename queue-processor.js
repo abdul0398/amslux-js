@@ -49,7 +49,7 @@ class URLProcessor {
 
       // Initialize browser
       this.browser = await puppeteer.launch({
-        headless: false,
+        headless: true,
         executablePath:
           "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         args: [
