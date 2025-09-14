@@ -50,8 +50,6 @@ class URLProcessor {
       // Initialize browser
       this.browser = await puppeteer.launch({
         headless: true,
-        executablePath:
-          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         args: [
           "--disable-gpu",
           "--no-sandbox",
@@ -60,6 +58,7 @@ class URLProcessor {
           "--disable-default-apps",
         ],
       });
+
       console.log("Browser initialized successfully");
 
       return true;
