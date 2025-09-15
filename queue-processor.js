@@ -460,6 +460,10 @@ class URLProcessor {
             ? productData.images[0]
             : null;
 
+        const about_description =
+          description.length > 100
+            ? description.slice(0, 100) + "..."
+            : description || `High-quality ${tag} product`;
         // Create new category service
         const [result] = await this.db.execute(
           `
@@ -474,7 +478,7 @@ class URLProcessor {
             subCategoryId,
             title,
             title,
-            description || `High-quality ${tag} product`,
+            about_description,
             description || `Premium ${tag} available for purchase`,
             primaryImageUrl,
             tag,
