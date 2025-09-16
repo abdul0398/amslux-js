@@ -355,7 +355,7 @@ class URLProcessor {
 
         const success = await this.downloadImage(imageUrl, localPath);
         if (success) {
-          const relativePath = `/images/services/${fileName}`;
+          const relativePath = `service_images/${fileName}`;
           downloadedImages.push({
             originalUrl: imageUrl,
             localPath: relativePath,
