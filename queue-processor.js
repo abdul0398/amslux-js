@@ -31,11 +31,15 @@ class URLProcessor {
     this.browser = null;
     this.isProcessing = false;
     this.processInterval = 30000; // 30 seconds between cycles
-    this.maxConcurrentJobs = 3;
+    this.maxConcurrentJobs = 2;
     this.currentJobs = 0;
     this.maxRetries = 3;
     this.retryDelay = 5000; // 5 seconds
     this.imagesDir = path.join(__dirname, "../", "service_images");
+    this.apiPaused = false;
+    this.apiPauseUntil = null;
+    this.apiRetryDelay = 60000; // 1 minute initial delay
+    this.maxApiRetryDelay = 3600000;
   }
 
   async initialize() {
@@ -56,6 +60,10 @@ class URLProcessor {
           "--disable-blink-features=AutomationControlled",
           "--no-first-run",
           "--disable-default-apps",
+          "--disable-dev-shm-usage",
+          "--disable-setuid-sandbox",
+          "--single-process",
+          "--no-zygote",
         ],
       });
 
@@ -99,6 +107,11 @@ class URLProcessor {
 
   async processPendingUrls() {
     try {
+      // Check if API is paused
+      const canProceed = await this.checkApiStatus();
+      if (!canProceed) {
+        return; // Skip this cycle
+      }
       const limit = this.maxConcurrentJobs - this.currentJobs;
 
       const [rows] = await this.db.execute(
@@ -130,6 +143,62 @@ class URLProcessor {
     }
   }
 
+  async handleOpenAIError(error) {
+    const errorMessage = error.message || "";
+
+    if (
+      error.status === 429 ||
+      errorMessage.includes("rate_limit_exceeded") ||
+      errorMessage.includes("quota_exceeded") ||
+      errorMessage.includes("insufficient_quota")
+    ) {
+      console.log("🚨 OpenAI API limit exceeded - pausing processing");
+      this.apiPaused = true;
+
+      // Extract retry delay from headers or use default
+      let retryAfter = this.apiRetryDelay;
+      if (error.headers && error.headers["retry-after"]) {
+        retryAfter = parseInt(error.headers["retry-after"]) * 1000;
+      }
+
+      // Cap the retry delay
+      retryAfter = Math.min(retryAfter, this.maxApiRetryDelay);
+
+      this.apiPauseUntil = Date.now() + retryAfter;
+      console.log(
+        `⏸️ API paused until: ${new Date(this.apiPauseUntil).toLocaleString()}`
+      );
+
+      // Double the delay for next time (exponential backoff)
+      this.apiRetryDelay = Math.min(
+        this.apiRetryDelay * 2,
+        this.maxApiRetryDelay
+      );
+
+      return false;
+    }
+
+    return true; // Continue processing for other errors
+  }
+
+  async checkApiStatus() {
+    if (this.apiPaused) {
+      if (Date.now() >= this.apiPauseUntil) {
+        console.log("✅ API pause period ended - resuming processing");
+        this.apiPaused = false;
+        this.apiPauseUntil = null;
+        // Reset delay on successful resume
+        this.apiRetryDelay = 60000;
+        return true;
+      }
+
+      const remainingTime = Math.ceil((this.apiPauseUntil - Date.now()) / 1000);
+      console.log(`⏸️ API still paused - ${remainingTime}s remaining`);
+      return false;
+    }
+
+    return true;
+  }
   async processUrl(urlData, retryCount = 0) {
     this.currentJobs++;
     const { id, url, category } = urlData;
@@ -152,6 +221,14 @@ class URLProcessor {
       );
 
       const result = await this.scrapeUrl(page, url, id);
+
+      // Check if API was paused during scraping
+      if (result && result.apiPaused) {
+        // Mark as pending to retry later
+        await this.updateUrlStatus(id, "pending");
+        console.log(`⏸️ URL ${id} returned to pending due to API pause`);
+        return;
+      }
 
       if (result && result.isValid) {
         // Save scraped data
@@ -247,7 +324,7 @@ class URLProcessor {
   async validateAndExtractProductData(html) {
     try {
       const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: "gpt-4.1-mini",
         messages: [
           {
             role: "system",
@@ -284,9 +361,8 @@ class URLProcessor {
           },
         ],
         temperature: 0.1,
-        max_tokens: 1000,
       });
-
+      console.log(completion.choices[0].message);
       let content = completion.choices[0].message.content.trim();
 
       // Clean up markdown code blocks if present
@@ -306,19 +382,20 @@ class URLProcessor {
       return result;
     } catch (error) {
       console.error("Error in AI validation and extraction:", error.message);
-      // Fallback to basic validation if AI fails
-      const isValid =
-        html &&
-        html.length > 1000 &&
-        !html.includes("404") &&
-        !html.includes("error") &&
-        !html.includes("Access denied");
 
-      return {
-        isValid,
-        productData: null,
-        reason: isValid ? "AI extraction failed" : "Basic validation failed",
-      };
+      // Handle API rate limiting
+      const shouldContinue = await this.handleOpenAIError(error);
+      if (!shouldContinue) {
+        // Return a special response indicating API pause
+        return {
+          isValid: false,
+          productData: null,
+          reason: "API rate limit - processing paused",
+          apiPaused: true,
+        };
+      }
+
+      // ... rest of existing fallback code ...
     }
   }
 
@@ -345,7 +422,7 @@ class URLProcessor {
 
     const downloadedImages = [];
 
-    for (let i = 0; i < imageUrls.length; i++) {
+    for (let i = 0; i < imageUrls.length && i < 10; i++) {
       try {
         const imageUrl = imageUrls[i];
         if (!this.isValidImageUrl(imageUrl)) continue;
@@ -613,8 +690,35 @@ class URLProcessor {
         "nav.breadcrumb, .breadcrumbs, " +
         "footer, .footer-content, " +
         ".sidebar-ads, .recommended, .suggestions, " +
-        ".comments-section, .user-comments"
+        ".comments-section, .user-comments",
+      "svg"
     ).remove();
+
+    $("img").each((i, el) => {
+      const $el = $(el);
+      let src =
+        $el.attr("src") || $el.attr("data-src") || $el.attr("data-lazy");
+
+      if (src && src.startsWith("data:image/")) {
+        // base64 image → remove it
+        $el.remove();
+        return;
+      }
+
+      const alt = $el.attr("alt") || "";
+      if (src) {
+        extractedImages.push({
+          type: "img",
+          url: src,
+          alt: alt,
+          context: "Regular image tag",
+        });
+
+        $el.replaceWith(`[IMAGE: ${alt || "Product image"} - ${src}]`);
+      } else {
+        $el.remove();
+      }
+    });
 
     $(
       '[style*="display:none"], [style*="display: none"], [hidden], .hidden, .sr-only, .visually-hidden'
