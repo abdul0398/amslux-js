@@ -25,7 +25,6 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
-
 async function getUserFCMToken() {
   const connection = await pool.getConnection();
   try {
@@ -107,8 +106,6 @@ async function getUserFCMToken() {
     connection.release();
   }
 }
-
-
 
 // New function to extract service-specific data for serviceId 4802
 async function extractServiceSpecificData(userId, userChatrooms) {
@@ -895,4 +892,4 @@ async function getUserPreference(userId) {
 module.exports = {
   processAndSaveUserSummaries,
 };
-getUserFCMToken();
+// getUserFCMToken();
