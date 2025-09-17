@@ -1004,4 +1004,4 @@ async function main() {
   await processor.startProcessing();
 }
 
-main().catch(console.error);
+module.exports = { main };
