@@ -343,6 +343,7 @@ class URLProcessor {
                   "title": "product title",
                   "price": "price information", 
                   "location": "location details",
+                  "size":"s,m,l (like this comma seperated if multiple)",
                   "description": "product description",
                   "images": ["list", "of", "image", "urls"],
                   "tag": "single product type like: watch, shirt, sneaker, etc"
@@ -507,7 +508,7 @@ class URLProcessor {
 
   async createCategoryService(urlId, productData) {
     try {
-      const { title, price, location, description, tag, downloadedImages } =
+      const { title, price, location, size, description, tag, downloadedImages } =
         productData;
 
       // Extract price information
@@ -547,8 +548,8 @@ class URLProcessor {
           INSERT INTO category_services (
             category_id, sub_category_id, service_name, title, about_description,
             description, imageUrl, tag, service_type, startingPrice, location,
-            source_url, stock_status, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'normal', ?, ?, ?, 'in_stock', NOW(), NOW())
+            size, source_url, stock_status, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'normal', ?, ?, ?, ?, 'in_stock', NOW(), NOW())
         `,
           [
             categoryId,
@@ -561,6 +562,7 @@ class URLProcessor {
             tag,
             extractedPrice,
             location,
+            size,
             sourceUrl,
           ]
         );
