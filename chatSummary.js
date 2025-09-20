@@ -489,7 +489,7 @@ RULES:
         // UPSERT query (insert or update if user_id exists)
         const query = `
       INSERT INTO user_summaries 
-  (user_id, summary_text, trips, brands, products, raw_summary, bought_services, style_match, trip_details, related_products, post_match_summary, business_pulse_data, created_at, updated_at) 
+  (user_id, summary_text, trips, brands, products, raw_summary, bought_services, style_match, trip_details, related_products, post_match_summary, business_pulse_summary, created_at, updated_at) 
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW()) 
 ON DUPLICATE KEY UPDATE 
   summary_text = VALUES(summary_text), 
@@ -502,7 +502,7 @@ ON DUPLICATE KEY UPDATE
   trip_details = VALUES(trip_details), 
   related_products = VALUES(related_products), 
   post_match_summary = VALUES(post_match_summary),
-  business_pulse_data = VALUES(business_pulse_data),
+  business_pulse_summary = VALUES(business_pulse_summary),
   updated_at = NOW();
     `;
 
