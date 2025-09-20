@@ -40,6 +40,13 @@ class URLProcessor {
     this.apiPauseUntil = null;
     this.apiRetryDelay = 60000; // 1 minute initial delay
     this.maxApiRetryDelay = 3600000;
+
+    // Browser restart configuration
+    this.browserStartTime = null;
+    this.maxBrowserUptime = 1 * 60 * 60 * 1000; // 2 hours in milliseconds
+    this.urlsProcessedSinceRestart = 0;
+    this.maxUrlsBeforeRestart = 50; // Restart after processing 100 URLs
+    this.restartingBrowser = false;
   }
 
   async initialize() {
@@ -52,27 +59,88 @@ class URLProcessor {
       await this.createImagesDirectory();
 
       // Initialize browser
-      this.browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          "--disable-gpu",
-          "--no-sandbox",
-          "--disable-blink-features=AutomationControlled",
-          "--no-first-run",
-          "--disable-default-apps",
-          "--disable-dev-shm-usage",
-          "--disable-setuid-sandbox",
-          "--single-process",
-          "--no-zygote",
-        ],
-      });
+      await this.initializeBrowser();
 
-      console.log("Browser initialized successfully");
-
+      console.log("Processor initialized successfully");
       return true;
     } catch (error) {
       console.error("Failed to initialize:", error.message);
       return false;
+    }
+  }
+
+  async initializeBrowser() {
+    if (this.browser) {
+      try {
+        await this.browser.close();
+      } catch (error) {
+        console.log("Error closing existing browser:", error.message);
+      }
+    }
+
+    this.browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        "--disable-gpu",
+        "--no-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--no-first-run",
+        "--disable-default-apps",
+        "--disable-dev-shm-usage",
+        "--disable-setuid-sandbox",
+        "--single-process",
+        "--no-zygote",
+        "--memory-pressure-off", // Disable memory pressure notifications
+        "--max_old_space_size=4096", // Increase memory limit
+      ],
+    });
+
+    this.browserStartTime = Date.now();
+    this.urlsProcessedSinceRestart = 0;
+    console.log("🚀 Browser initialized successfully");
+  }
+
+  async shouldRestartBrowser() {
+    const now = Date.now();
+    const uptime = now - this.browserStartTime;
+
+    // Restart conditions:
+    // 1. Browser has been running for more than maxBrowserUptime
+    // 2. Processed more than maxUrlsBeforeRestart URLs
+    // 3. No active jobs (to avoid interrupting ongoing processes)
+
+    const uptimeExceeded = uptime > this.maxBrowserUptime;
+    const urlCountExceeded =
+      this.urlsProcessedSinceRestart >= this.maxUrlsBeforeRestart;
+    const noActiveJobs = this.currentJobs === 0;
+
+    return (
+      (uptimeExceeded || urlCountExceeded) &&
+      noActiveJobs &&
+      !this.restartingBrowser
+    );
+  }
+
+  async restartBrowserIfNeeded() {
+    if (await this.shouldRestartBrowser()) {
+      this.restartingBrowser = true;
+
+      const uptime = Math.round(
+        (Date.now() - this.browserStartTime) / 1000 / 60
+      ); // minutes
+      console.log(
+        `🔄 Restarting browser after ${uptime} minutes uptime and ${this.urlsProcessedSinceRestart} URLs processed`
+      );
+
+      try {
+        await this.initializeBrowser();
+        console.log("✅ Browser restarted successfully");
+      } catch (error) {
+        console.error("❌ Failed to restart browser:", error.message);
+        // Try to continue with existing browser if restart fails
+      }
+
+      this.restartingBrowser = false;
     }
   }
 
@@ -96,10 +164,25 @@ class URLProcessor {
 
     while (this.isProcessing) {
       try {
+        // Check if browser needs restart before processing
+        await this.restartBrowserIfNeeded();
+
         await this.processPendingUrls();
         await this.sleep(this.processInterval);
       } catch (error) {
         console.error("Error in processing cycle:", error.message);
+        if (
+          error.message.includes("Browser") ||
+          error.message.includes("Target closed")
+        ) {
+          console.log("🔄 Browser error detected, attempting restart...");
+          try {
+            await this.initializeBrowser();
+          } catch (restartError) {
+            console.error("Failed to restart browser:", restartError.message);
+          }
+        }
+
         await this.sleep(this.processInterval);
       }
     }
@@ -107,6 +190,11 @@ class URLProcessor {
 
   async processPendingUrls() {
     try {
+      if (this.restartingBrowser) {
+        console.log("⏸️ Skipping cycle - browser is restarting");
+        return;
+      }
+
       // Check if API is paused
       const canProceed = await this.checkApiStatus();
       if (!canProceed) {
@@ -199,6 +287,7 @@ class URLProcessor {
 
     return true;
   }
+
   async processUrl(urlData, retryCount = 0) {
     this.currentJobs++;
     const { id, url, category } = urlData;
@@ -214,6 +303,11 @@ class URLProcessor {
 
       // Create new page for this URL
       page = await this.browser.newPage();
+
+      // Set page timeout and other optimizations
+      page.setDefaultTimeout(30000);
+      page.setDefaultNavigationTimeout(30000);
+
       await page.setUserAgent(
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
           "AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -243,6 +337,9 @@ class URLProcessor {
         });
 
         console.log(`✅ Successfully processed URL ${id}`);
+
+        // Increment counter for successful processing
+        this.urlsProcessedSinceRestart++;
       } else {
         // Mark as invalid
         await this.updateUrlStatus(id, "failed", { is_valid: 0 });
@@ -278,10 +375,61 @@ class URLProcessor {
       }
     } finally {
       if (page) {
-        await page.close();
+        try {
+          await page.close();
+        } catch (error) {
+          console.log("Error closing page:", error.message);
+        }
       }
       this.currentJobs--;
     }
+  }
+
+  async getBrowserMemoryUsage() {
+    try {
+      if (!this.browser) return null;
+
+      const pages = await this.browser.pages();
+      let totalMemory = 0;
+
+      for (const page of pages) {
+        try {
+          const metrics = await page.metrics();
+          totalMemory += metrics.JSHeapUsedSize || 0;
+        } catch (error) {
+          // Ignore errors for closed pages
+        }
+      }
+
+      return {
+        totalMemoryMB: Math.round(totalMemory / 1024 / 1024),
+        pageCount: pages.length,
+        uptimeMinutes: Math.round(
+          (Date.now() - this.browserStartTime) / 1000 / 60
+        ),
+      };
+    } catch (error) {
+      console.log("Error getting browser memory usage:", error.message);
+      return null;
+    }
+  }
+  async logBrowserStats() {
+    const stats = await this.getBrowserMemoryUsage();
+    if (stats) {
+      console.log(
+        `📊 Browser Stats: ${stats.totalMemoryMB}MB memory, ${stats.pageCount} pages, ${stats.uptimeMinutes}min uptime, ${this.urlsProcessedSinceRestart} URLs processed`
+      );
+    }
+  }
+
+  // Add this to your processPendingUrls method to log stats periodically
+  async processPendingUrlsWithStats() {
+    // Log browser stats every 10 cycles (approximately every 5 minutes)
+    if (this.urlsProcessedSinceRestart % 10 === 0) {
+      await this.logBrowserStats();
+    }
+
+    return this.processPendingUrls();
   }
 
   async scrapeUrl(page, url, urlId) {
@@ -508,8 +656,15 @@ class URLProcessor {
 
   async createCategoryService(urlId, productData) {
     try {
-      const { title, price, location, size, description, tag, downloadedImages } =
-        productData;
+      const {
+        title,
+        price,
+        location,
+        size,
+        description,
+        tag,
+        downloadedImages,
+      } = productData;
 
       // Extract price information
       const extractedPrice = this.extractPrice(price);
@@ -1007,3 +1162,4 @@ async function main() {
 }
 
 module.exports = { main };
+main().catch(console.error);

@@ -56,10 +56,10 @@ io.on("connection", (socket) => {
 // Start the HTTPS server
 const PORT = process.env.PORT || 3000;
 httpsServer.listen(PORT, async () => {
-  cron.schedule("0 * * * *", async () => {
-    await processAndSaveUserSummaries();
-  });
-  // await processAndSaveUserSummaries();
-  console.log(`Secure Socket.IO server running on port ${PORT}`);
+  // cron.schedule("0 * * * *", async () => {
+  //   await processAndSaveUserSummaries();
+  // });
+  // // await processAndSaveUserSummaries();
+  // console.log(`Secure Socket.IO server running on port ${PORT}`);
   main().catch(console.error);
 });
