@@ -204,7 +204,7 @@ class URLProcessor {
 
       const [rows] = await this.db.execute(
         `
-      SELECT id, url, category, priority 
+      SELECT id, url, category, priority, manual_html
       FROM product_urls 
       WHERE status = 'pending'
       ORDER BY 
@@ -290,7 +290,7 @@ class URLProcessor {
 
   async processUrl(urlData, retryCount = 0) {
     this.currentJobs++;
-    const { id, url, category } = urlData;
+    const { id, url, category, manual_html } = urlData;
     let page = null;
 
     try {
@@ -301,20 +301,28 @@ class URLProcessor {
       // Mark as processing
       await this.updateUrlStatus(id, "processing");
 
-      // Create new page for this URL
-      page = await this.browser.newPage();
+      let result;
 
-      // Set page timeout and other optimizations
-      page.setDefaultTimeout(30000);
-      page.setDefaultNavigationTimeout(30000);
+      // If manual_html is present, skip Puppeteer entirely
+      if (manual_html && manual_html.trim().length > 0) {
+        console.log(`📋 Using manual HTML for URL ${id} - skipping Puppeteer`);
+        result = await this.scrapeUrlWithManualHtml(manual_html, id);
+      } else {
+        // Create new page for this URL
+        page = await this.browser.newPage();
 
-      await page.setUserAgent(
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-          "AppleWebKit/537.36 (KHTML, like Gecko) " +
-          "Chrome/115.0 Safari/537.36"
-      );
+        // Set page timeout and other optimizations
+        page.setDefaultTimeout(30000);
+        page.setDefaultNavigationTimeout(30000);
 
-      const result = await this.scrapeUrl(page, url, id);
+        await page.setUserAgent(
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/115.0 Safari/537.36"
+        );
+
+        result = await this.scrapeUrl(page, url, id);
+      }
 
       // Check if API was paused during scraping
       if (result && result.apiPaused) {
@@ -430,6 +438,22 @@ class URLProcessor {
     }
 
     return this.processPendingUrls();
+  }
+
+  async scrapeUrlWithManualHtml(manual_html, urlId) {
+    try {
+      console.log(`🔄 Processing manual HTML for URL ${urlId}`);
+
+      const optimizedHtml = this.optimizeHtmlForAI(manual_html);
+
+      // Single AI call that both validates and extracts data
+      const aiResult = await this.validateAndExtractProductData(optimizedHtml);
+
+      return aiResult;
+    } catch (error) {
+      console.error("Manual HTML processing error:", error.message);
+      return { isValid: false, productData: null };
+    }
   }
 
   async scrapeUrl(page, url, urlId) {
@@ -703,7 +727,7 @@ class URLProcessor {
           INSERT INTO category_services (
             category_id, sub_category_id, service_name, title, about_description,
             description, imageUrl, tag, service_type, startingPrice, location,
-            size, source_url, stock_status, created_at, updated_at
+            sizes, source_url, stock_status, created_at, updated_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'normal', ?, ?, ?, ?, 'in_stock', NOW(), NOW())
         `,
           [
@@ -1162,3 +1186,4 @@ async function main() {
 }
 
 module.exports = { main };
+main().catch(console.error);
