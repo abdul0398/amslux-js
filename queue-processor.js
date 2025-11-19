@@ -513,7 +513,7 @@ class URLProcessor {
                 "isValid": true,
                 "productData": {
                   "title": "product title",
-                  "price": "price information", 
+                  "price": "price information in usd (if any other currency then change to usd)", 
                   "location": "location details",
                   "size":"s,m,l (like this comma seperated if multiple)",
                   "description": "product description",
