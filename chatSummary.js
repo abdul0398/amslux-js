@@ -180,7 +180,7 @@ Only extract information that is explicitly mentioned in the conversation. Use d
 
       try {
         const completion = await openai.chat.completions.create({
-          model: "gpt-4",
+          model: "gpt-4.1-nano",
           messages: [
             {
               role: "system",
@@ -398,7 +398,7 @@ RULES:
 `;
 
       const completion = await openai.chat.completions.create({
-        model: "gpt-4",
+        model: "gpt-4.1-nano",
         messages: [
           {
             role: "system",
@@ -453,7 +453,7 @@ RULES:
         const userPreference = getUserPreference(userId);
 
         const completion = await openai.chat.completions.create({
-          model: "gpt-4",
+          model: "gpt-4.1-nano",
           messages: [
             {
               role: "system",
@@ -615,7 +615,7 @@ async function getRelatedProductsBasedOnTrip(tripDetails) {
 
     try {
       const response = await openai.chat.completions.create({
-        model: "gpt-4o",
+        model: "gpt-4.1-nano",
         messages: [
           {
             role: "system",
@@ -817,7 +817,7 @@ Only extract information that is explicitly mentioned in the business conversati
 
       try {
         const completion = await openai.chat.completions.create({
-          model: "gpt-4",
+          model: "gpt-4.1-nano",
           messages: [
             {
               role: "system",
