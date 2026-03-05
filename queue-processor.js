@@ -841,7 +841,7 @@ class URLProcessor {
     this.extractBackgroundImages($, extractedImages);
 
     $(
-      "script, style, noscript, iframe, embed, object, " +
+      "script, style, noscript, iframe, embed, object, svg, " +
         'link[rel="stylesheet"], meta, head, ' +
         ".cookie-banner, .cookie-notice, .gdpr, " +
         ".newsletter, .popup, .modal, .overlay, " +
@@ -851,8 +851,7 @@ class URLProcessor {
         "nav.breadcrumb, .breadcrumbs, " +
         "footer, .footer-content, " +
         ".sidebar-ads, .recommended, .suggestions, " +
-        ".comments-section, .user-comments",
-      "svg"
+        ".comments-section, .user-comments"
     ).remove();
 
     $("img").each((_, el) => {
@@ -1024,7 +1023,7 @@ class URLProcessor {
       }
     });
 
-    $("style").each((_, el) => {
+    $("style").each((i, el) => {
       const cssContent = $(el).html();
       if (cssContent) {
         const bgImages = this.extractUrlsFromCss(cssContent);
