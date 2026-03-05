@@ -1,10 +1,10 @@
 require("dotenv").config();
 const puppeteer = require("puppeteer");
 const cheerio = require("cheerio");
-const { encoding_for_model } = require("tiktoken");
 const OpenAI = require("openai");
 const mysql = require("mysql2/promise");
 const fs = require("fs").promises;
+const fsSync = require("fs");
 const path = require("path");
 const https = require("https");
 const http = require("http");
@@ -53,7 +53,7 @@ class URLProcessor {
   async initialize() {
     try {
       // Initialize database connection
-      this.db = await mysql.createPool(dbConfig);
+      this.db = mysql.createPool(dbConfig);
       console.log("Database connected successfully");
 
       // Create images directory if it doesn't exist
@@ -197,11 +197,12 @@ class URLProcessor {
       }
 
       // Check if API is paused
-      const canProceed = await this.checkApiStatus();
+      const canProceed = this.checkApiStatus();
       if (!canProceed) {
         return; // Skip this cycle
       }
       const limit = this.maxConcurrentJobs - this.currentJobs;
+      if (limit <= 0) return;
 
       const [rows] = await this.db.execute(
         `
@@ -270,7 +271,7 @@ class URLProcessor {
     return true; // Continue processing for other errors
   }
 
-  async checkApiStatus() {
+  checkApiStatus() {
     if (this.apiPaused) {
       if (Date.now() >= this.apiPauseUntil) {
         console.log("✅ API pause period ended - resuming processing");
@@ -291,106 +292,86 @@ class URLProcessor {
 
   async processUrl(urlData, retryCount = 0) {
     this.currentJobs++;
-    const { id, url, category, manual_html } = urlData;
+    const { id, url, manual_html } = urlData;
     let page = null;
+    let shouldRetry = false;
 
     try {
-      console.log(
-        `🔄 Processing URL ${id}: ${url} (Attempt ${retryCount + 1})`
-      );
-
-      // Mark as processing
+      console.log(`🔄 Processing URL ${id}: ${url} (Attempt ${retryCount + 1})`);
       await this.updateUrlStatus(id, "processing");
 
       let result;
 
-      // If manual_html is present, skip Puppeteer entirely
       if (manual_html && manual_html.trim().length > 0) {
         console.log(`📋 Using manual HTML for URL ${id} - skipping Puppeteer`);
         result = await this.scrapeUrlWithManualHtml(manual_html, id);
       } else {
-        // Create new page for this URL
         page = await this.browser.newPage();
-
-        // Set page timeout and other optimizations
         page.setDefaultTimeout(30000);
         page.setDefaultNavigationTimeout(30000);
-
         await page.setUserAgent(
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/115.0 Safari/537.36"
+            "Chrome/124.0.0.0 Safari/537.36"
         );
-
         result = await this.scrapeUrl(page, url, id);
       }
 
-      // Check if API was paused during scraping
       if (result && result.apiPaused) {
-        // Mark as pending to retry later
         await this.updateUrlStatus(id, "pending");
         console.log(`⏸️ URL ${id} returned to pending due to API pause`);
         return;
       }
 
       if (result && result.isValid) {
-        // Save scraped data
-        await this.saveScrapedData(id, result.productData);
-
-        // Update URL status
-        await this.updateUrlStatus(id, "scraped", {
-          is_crawled: true,
-          is_parsed: true,
-          is_valid: 1,
-          last_scrapped: new Date().toISOString().split("T")[0],
-        });
-
-        console.log(`✅ Successfully processed URL ${id}`);
-
-        // Increment counter for successful processing
-        this.urlsProcessedSinceRestart++;
+        // Throws on DB failure — won't mark scraped if save failed
+        const saved = await this.saveScrapedData(id, result.productData);
+        if (saved) {
+          await this.updateUrlStatus(id, "scraped", {
+            is_crawled: true,
+            is_parsed: true,
+            is_valid: 1,
+            last_scrapped: new Date().toISOString().split("T")[0],
+          });
+          console.log(`✅ Successfully processed URL ${id}`);
+          this.urlsProcessedSinceRestart++;
+        } else {
+          await this.updateUrlStatus(id, "failed");
+          console.log(`❌ URL ${id}: save returned false (missing title or data)`);
+        }
       } else {
-        // Mark as invalid
         await this.updateUrlStatus(id, "failed", { is_valid: 0 });
         console.log(`❌ URL ${id} is not a valid product page`);
       }
     } catch (error) {
-      console.error(
-        `Error processing URL ${id} (Attempt ${retryCount + 1}):`,
-        error.message
-      );
+      console.error(`Error processing URL ${id} (Attempt ${retryCount + 1}):`, error.message);
 
-      // Retry logic
       if (retryCount < this.maxRetries) {
-        console.log(
-          `🔄 Retrying URL ${id} in ${this.retryDelay / 1000} seconds...`
-        );
-        await this.sleep(this.retryDelay);
-
-        // Close current page before retry
-        if (page) {
-          await page.close();
-          page = null;
-        }
-
-        this.currentJobs--;
-        return this.processUrl(urlData, retryCount + 1);
+        // Signal finally to skip currentJobs-- so the retry call can claim the slot
+        shouldRetry = true;
+        console.log(`🔄 Retrying URL ${id} in ${this.retryDelay / 1000} seconds...`);
       } else {
-        // Mark as failed after all retries exhausted
         await this.updateUrlStatus(id, "failed");
-        console.log(
-          `❌ Failed to process URL ${id} after ${this.maxRetries + 1} attempts`
-        );
+        console.log(`❌ Failed to process URL ${id} after ${retryCount + 1} attempts`);
       }
     } finally {
       if (page) {
-        try {
-          await page.close();
-        } catch (error) {
-          console.log("Error closing page:", error.message);
-        }
+        try { await page.close(); } catch (e) { console.log("Error closing page:", e.message); }
       }
+      // Only release the job slot when NOT handing off to a retry.
+      // The retry call will manage its own slot via currentJobs++ at its start.
+      if (!shouldRetry) {
+        this.currentJobs--;
+      }
+    }
+
+    // After finally — retry here so currentJobs is still 1 (this call's slot)
+    // then the recursive call increments to 1 and decrements back cleanly on finish.
+    if (shouldRetry) {
+      await this.sleep(this.retryDelay);
+      // Hand off: decrement this call's slot, recursive call will increment its own
       this.currentJobs--;
+      return this.processUrl(urlData, retryCount + 1);
     }
   }
 
@@ -458,39 +439,36 @@ class URLProcessor {
   }
 
   async scrapeUrl(page, url, urlId) {
-    try {
-      const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-      await Promise.race([
-        page.goto(url, { waitUntil: "load", timeout: 30000 }),
-        delay(30000),
-      ]);
-
-      const html = await page.content();
-
-      // Basic check for blocked/error pages
-      if (
-        !html ||
-        html.length < 1000 ||
-        html.includes("Cloudflare") ||
-        html.includes("Access denied")
-      ) {
-        console.log(
-          `❌ Failed to extract valid HTML for URL ${urlId} - likely blocked or error page`
-        );
-        return { isValid: false, productData: null };
+    // Block images, fonts, stylesheets — not needed for text extraction
+    // This speeds up page load and reduces noise in the HTML sent to AI
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      const type = req.resourceType();
+      if (["image", "stylesheet", "font", "media"].includes(type)) {
+        req.abort();
+      } else {
+        req.continue();
       }
+    });
 
-      const optimizedHtml = this.optimizeHtmlForAI(html);
+    // Let navigation errors throw — outer processUrl catch handles retries
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
-      // Single AI call that both validates and extracts data
-      const aiResult = await this.validateAndExtractProductData(optimizedHtml);
+    const html = await page.content();
 
-      return aiResult;
-    } catch (error) {
-      console.error("Scraping error:", error.message);
+    // Basic check for blocked/error pages — these are not retryable, return invalid
+    if (
+      !html ||
+      html.length < 1000 ||
+      html.includes("Cloudflare") ||
+      html.includes("Access denied")
+    ) {
+      console.log(`❌ Blocked or empty page for URL ${urlId}`);
       return { isValid: false, productData: null };
     }
+
+    const optimizedHtml = this.optimizeHtmlForAI(html);
+    return await this.validateAndExtractProductData(optimizedHtml);
   }
 
   // OPTIMIZED: Single AI call for both validation and extraction
@@ -514,7 +492,7 @@ class URLProcessor {
                 "isValid": true,
                 "productData": {
                   "title": "product title",
-                  "price": "price information in usd (if any other currency then change to usd)", 
+                  "price": 1500.00,
                   "location": "location details",
                   "size":"s,m,l (like this comma seperated if multiple)",
                   "description": "product description",
@@ -522,8 +500,23 @@ class URLProcessor {
                   "tag": "single product type like: watch, shirt, sneaker, etc"
                 }
               }
-              
+
               - Always output valid JSON only
+              - "price" must be a plain numeric value in USD with no currency symbols or text (e.g. 1500.00 not "$1,500").
+                Step 1: Find the price and identify its currency (USD, EUR, GBP, AED, SAR, etc.)
+                Step 2: If not already USD, convert to USD using approximate exchange rates:
+                  EUR → multiply by 1.08
+                  GBP → multiply by 1.27
+                  AED → multiply by 0.27
+                  SAR → multiply by 0.27
+                  CAD → multiply by 0.74
+                  AUD → multiply by 0.65
+                  CHF → multiply by 1.13
+                  JPY → multiply by 0.0067
+                  CNY → multiply by 0.14
+                  INR → multiply by 0.012
+                  For any other currency, use your best estimate of the USD exchange rate.
+                Step 3: Return only the final USD number. If no price found, use null.
               - If text is not in English, translate it to natural English
               - Ensure all productData fields are in English
               - Only respond with the JSON object, no additional text
@@ -561,7 +554,6 @@ class URLProcessor {
       // Handle API rate limiting
       const shouldContinue = await this.handleOpenAIError(error);
       if (!shouldContinue) {
-        // Return a special response indicating API pause
         return {
           isValid: false,
           productData: null,
@@ -570,26 +562,25 @@ class URLProcessor {
         };
       }
 
-      // ... rest of existing fallback code ...
+      // For all other errors (JSON parse, network, etc.) — throw so processUrl retries
+      throw error;
     }
   }
 
   async saveScrapedData(urlId, productData) {
-    try {
-      // Create category service directly - no need for intermediate table
-      if (productData && productData.title) {
-        // Download images locally first
-        const downloadedImages = await this.downloadImages(
-          productData.images,
-          urlId
-        );
-        productData.downloadedImages = downloadedImages;
-
-        await this.createCategoryService(urlId, productData);
-      }
-    } catch (error) {
-      console.error("Error saving scraped data:", error.message);
+    if (!productData || !productData.title) {
+      console.warn(`⚠️ URL ${urlId}: productData missing title, skipping save`);
+      return false;
     }
+
+    // Download images locally first
+    const downloadedImages = await this.downloadImages(
+      productData.images,
+      urlId
+    );
+    productData.downloadedImages = downloadedImages;
+
+    return await this.createCategoryService(urlId, productData);
   }
 
   async downloadImages(imageUrls, urlId) {
@@ -649,7 +640,7 @@ class URLProcessor {
 
       const request = protocol.get(url, (response) => {
         if (response.statusCode === 200) {
-          const fileStream = require("fs").createWriteStream(localPath);
+          const fileStream = fsSync.createWriteStream(localPath);
           response.pipe(fileStream);
 
           fileStream.on("finish", () => {
@@ -681,91 +672,92 @@ class URLProcessor {
   }
 
   async createCategoryService(urlId, productData) {
-    try {
-      const {
+    const {
+      title,
+      price,
+      location,
+      size,
+      description,
+      tag,
+      downloadedImages,
+    } = productData;
+
+    // Extract price information
+    const extractedPrice = this.extractPrice(price);
+
+    // Get the source URL and category info from product_urls table
+    const [urlRow] = await this.db.execute(
+      "SELECT url, category, subcategory_id FROM product_urls WHERE id = ?",
+      [urlId]
+    );
+    const sourceUrl = urlRow.length > 0 ? urlRow[0].url : null;
+    const categoryId = urlRow.length > 0 ? urlRow[0].category : null;
+    const subCategoryId = urlRow.length > 0 ? urlRow[0].subcategory_id : null;
+
+    // Check if similar service already exists
+    const [existing] = await this.db.execute(
+      "SELECT id FROM category_services WHERE tag = ? AND title = ?",
+      [tag, title]
+    );
+
+    if (existing.length > 0) {
+      console.log(`🔄 Service already exists for: ${title}`);
+      return true;
+    }
+
+    // Use first downloaded image as primary image, fallback to original URL if no downloads
+    const primaryImageUrl =
+      downloadedImages && downloadedImages.length > 0
+        ? downloadedImages[0].localPath
+        : productData.images && productData.images.length > 0
+        ? productData.images[0]
+        : null;
+
+    const safeDescription = description || `High-quality ${tag} product`;
+    const about_description =
+      safeDescription.length > 100
+        ? safeDescription.slice(0, 100) + "..."
+        : safeDescription;
+
+    // Create new category service
+    const [result] = await this.db.execute(
+      `
+      INSERT INTO category_services (
+        category_id, sub_category_id, service_name, title, about_description,
+        description, imageUrl, tag, service_type, startingPrice, location,
+        sizes, source_url, stock_status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'normal', ?, ?, ?, ?, 'in_stock', NOW(), NOW())
+    `,
+      [
+        categoryId,
+        subCategoryId,
         title,
-        price,
+        title,
+        about_description,
+        safeDescription,
+        primaryImageUrl,
+        tag,
+        extractedPrice,
         location,
         size,
-        description,
-        tag,
-        downloadedImages,
-      } = productData;
+        sourceUrl,
+      ]
+    );
 
-      // Extract price information
-      const extractedPrice = this.extractPrice(price);
+    const serviceId = result.insertId;
 
-      // Get the source URL and category info from product_urls table
-      const [urlRow] = await this.db.execute(
-        "SELECT url, category, subcategory_id FROM product_urls WHERE id = ?",
-        [urlId]
-      );
-      const sourceUrl = urlRow.length > 0 ? urlRow[0].url : null;
-      const categoryId = urlRow.length > 0 ? urlRow[0].category : null;
-      const subCategoryId = urlRow.length > 0 ? urlRow[0].subcategory_id : null;
-
-      // Check if similar service already exists
-      const [existing] = await this.db.execute(
-        "SELECT id FROM category_services WHERE tag = ? AND title = ?",
-        [tag, title]
-      );
-
-      if (existing.length === 0) {
-        // Use first downloaded image as primary image, fallback to original URL if no downloads
-        const primaryImageUrl =
-          downloadedImages && downloadedImages.length > 0
-            ? downloadedImages[0].localPath
-            : productData.images && productData.images.length > 0
-            ? productData.images[0]
-            : null;
-
-        const about_description =
-          description.length > 100
-            ? description.slice(0, 100) + "..."
-            : description || `High-quality ${tag} product`;
-        // Create new category service
-        const [result] = await this.db.execute(
-          `
-          INSERT INTO category_services (
-            category_id, sub_category_id, service_name, title, about_description,
-            description, imageUrl, tag, service_type, startingPrice, location,
-            sizes, source_url, stock_status, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'normal', ?, ?, ?, ?, 'in_stock', NOW(), NOW())
-        `,
-          [
-            categoryId,
-            subCategoryId,
-            title,
-            title,
-            about_description,
-            description || `Premium ${tag} available for purchase`,
-            primaryImageUrl,
-            tag,
-            extractedPrice,
-            location,
-            size,
-            sourceUrl,
-          ]
-        );
-
-        const serviceId = result.insertId;
-
-        // Store additional images in service_image_galleries table
-        if (downloadedImages && downloadedImages.length > 0) {
-          await this.saveImageGallery(serviceId, downloadedImages);
-        }
-
-        console.log(
-          `📦 Created category service for: ${title} (${tag}) with ${
-            downloadedImages ? downloadedImages.length : 0
-          } images`
-        );
-      } else {
-        console.log(`🔄 Service already exists for: ${title}`);
-      }
-    } catch (error) {
-      console.error("Error creating category service:", error.message);
+    // Store additional images in service_image_galleries table
+    if (downloadedImages && downloadedImages.length > 0) {
+      await this.saveImageGallery(serviceId, downloadedImages);
     }
+
+    console.log(
+      `📦 Created category service for: ${title} (${tag}) with ${
+        downloadedImages ? downloadedImages.length : 0
+      } images`
+    );
+
+    return true;
   }
 
   async saveImageGallery(serviceId, downloadedImages) {
@@ -789,50 +781,36 @@ class URLProcessor {
     }
   }
 
-  generateCategoryId(tag) {
-    // Map common tags to category IDs
-    const categoryMap = {
-      watch: "luxury-watches",
-      watches: "luxury-watches",
-      jewelry: "jewelry",
-      ring: "jewelry",
-      necklace: "jewelry",
-      bracelet: "jewelry",
-      earrings: "jewelry",
-      handbag: "fashion-accessories",
-      bag: "fashion-accessories",
-      shoes: "footwear",
-      sneakers: "footwear",
-      boots: "footwear",
-      shirt: "clothing",
-      dress: "clothing",
-      jacket: "clothing",
-      coat: "clothing",
-      car: "vehicles",
-      motorcycle: "vehicles",
-      house: "real-estate",
-      villa: "real-estate",
-      apartment: "real-estate",
-    };
+  extractPrice(price) {
+    if (price === null || price === undefined || price === "") return null;
 
-    return categoryMap[tag.toLowerCase()] || `category-${tag.toLowerCase()}`;
-  }
-
-  generateSubCategoryId(tag) {
-    // Generate subcategory based on tag
-    return `sub-${tag.toLowerCase()}`;
-  }
-
-  extractPrice(priceString) {
-    if (!priceString) return null;
-
-    // Extract numeric value from price string
-    const matches = priceString.match(/[\d,]+\.?\d*/);
-    if (matches) {
-      return parseFloat(matches[0].replace(/,/g, ""));
+    // AI now returns a number directly
+    if (typeof price === "number") {
+      return isFinite(price) && price >= 0 ? price : null;
     }
 
-    return null;
+    const str = String(price).trim();
+
+    // Strip currency symbols and whitespace
+    const cleaned = str.replace(/[^0-9.,]/g, "");
+    if (!cleaned) return null;
+
+    // Detect European format: "1.500,50" (dot=thousands, comma=decimal)
+    // vs standard format: "1,500.50" (comma=thousands, dot=decimal)
+    const lastDot = cleaned.lastIndexOf(".");
+    const lastComma = cleaned.lastIndexOf(",");
+
+    let normalized;
+    if (lastComma > lastDot) {
+      // European: "1.500,50" → remove dots, replace comma with dot
+      normalized = cleaned.replace(/\./g, "").replace(",", ".");
+    } else {
+      // Standard: "1,500.50" → remove commas
+      normalized = cleaned.replace(/,/g, "");
+    }
+
+    const value = parseFloat(normalized);
+    return isFinite(value) && value >= 0 ? value : null;
   }
 
   async updateUrlStatus(id, status, additionalFields = {}) {
@@ -877,7 +855,7 @@ class URLProcessor {
       "svg"
     ).remove();
 
-    $("img").each((i, el) => {
+    $("img").each((_, el) => {
       const $el = $(el);
       let src =
         $el.attr("src") || $el.attr("data-src") || $el.attr("data-lazy");
@@ -907,7 +885,7 @@ class URLProcessor {
       '[style*="display:none"], [style*="display: none"], [hidden], .hidden, .sr-only, .visually-hidden'
     ).remove();
 
-    $("nav").each((i, el) => {
+    $("nav").each((_, el) => {
       const navText = $(el).text().toLowerCase();
       if (
         !navText.includes("watch") &&
@@ -921,7 +899,7 @@ class URLProcessor {
       }
     });
 
-    $("*").each((i, el) => {
+    $("*").each((_, el) => {
       const $el = $(el);
       const importantAttrs = [
         "href",
@@ -978,26 +956,6 @@ class URLProcessor {
       }
     });
 
-    $("img").each((i, el) => {
-      const $el = $(el);
-      const src =
-        $el.attr("src") || $el.attr("data-src") || $el.attr("data-lazy");
-      const alt = $el.attr("alt") || "";
-
-      if (src) {
-        extractedImages.push({
-          type: "img",
-          url: src,
-          alt: alt,
-          context: "Regular image tag",
-        });
-
-        $el.replaceWith(`[IMAGE: ${alt || "Property image"} - ${src}]`);
-      } else {
-        $el.remove();
-      }
-    });
-
     if (extractedImages.length > 0) {
       const imagesSummary = `
         <div class="extracted-images-summary">
@@ -1015,7 +973,7 @@ class URLProcessor {
       $("body").prepend(imagesSummary);
     }
 
-    $("table").each((i, el) => {
+    $("table").each((_, el) => {
       const $table = $(el);
       $table
         .find("*")
@@ -1025,7 +983,7 @@ class URLProcessor {
         .removeAttr("height");
     });
 
-    $("*").each((i, el) => {
+    $("*").each((_, el) => {
       const $el = $(el);
       if ($el.children().length === 0 && $el.text().trim() === "") {
         $el.remove();
@@ -1047,7 +1005,7 @@ class URLProcessor {
   }
 
   extractBackgroundImages($, extractedImages) {
-    $('[style*="background"]').each((i, el) => {
+    $('[style*="background"]').each((_, el) => {
       const $el = $(el);
       const styleAttr = $el.attr("style");
 
@@ -1066,7 +1024,7 @@ class URLProcessor {
       }
     });
 
-    $("style").each((i, el) => {
+    $("style").each((_, el) => {
       const cssContent = $(el).html();
       if (cssContent) {
         const bgImages = this.extractUrlsFromCss(cssContent);
@@ -1083,7 +1041,7 @@ class URLProcessor {
 
     $(
       "[data-bg], [data-background], [data-src], [data-image], [data-lazy]"
-    ).each((i, el) => {
+    ).each((_, el) => {
       const $el = $(el);
       const dataBg =
         $el.attr("data-bg") ||
