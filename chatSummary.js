@@ -1,6 +1,7 @@
 const admin = require("firebase-admin");
 const { OpenAI } = require("openai");
 const dotenv = require("dotenv");
+const AICostTrackerService = require("./services/AICostTrackerService");
 const mysql = require("mysql2/promise"); // Added for MySQL async support
 dotenv.config();
 
@@ -192,6 +193,7 @@ Only extract information that is explicitly mentioned in the conversation. Use d
           temperature: 0.3,
         });
 
+        AICostTrackerService.trackOpenAI("gpt-4.1-nano", "extract_service_4802", completion);
         const response = completion.choices[0].message.content.trim();
         // Clean the response to remove any markdown code blocks
         let cleanedResponse = response
@@ -409,6 +411,7 @@ RULES:
         ],
       });
 
+      AICostTrackerService.trackOpenAI("gpt-4.1-nano", "chat_summary", completion);
       const response = completion.choices[0].message.content.trim();
       // Validate response format (basic regex check)
       const formatRegex =
@@ -466,6 +469,7 @@ RULES:
             },
           ],
         });
+        AICostTrackerService.trackOpenAI("gpt-4.1-nano", "style_match", completion);
         const styleMatch = parseInt(completion.choices[0].message.content);
 
         let relatedProductsJson = "";
@@ -663,6 +667,7 @@ async function getRelatedProductsBasedOnTrip(tripDetails) {
         max_tokens: 3000,
       });
 
+      AICostTrackerService.trackOpenAI("gpt-4.1-nano", "related_products", response);
       console.log(
         `Dual processing chunk completed. Tokens used: ${response.usage.total_tokens}`
       );
@@ -829,6 +834,7 @@ Only extract information that is explicitly mentioned in the business conversati
           temperature: 0.3,
         });
 
+        AICostTrackerService.trackOpenAI("gpt-4.1-nano", "extract_business_pulse", completion);
         const response = completion.choices[0].message.content.trim();
         // Clean the response to remove any markdown code blocks
         let cleanedResponse = response

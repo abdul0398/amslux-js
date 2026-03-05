@@ -8,6 +8,7 @@ const fs = require("fs").promises;
 const path = require("path");
 const https = require("https");
 const http = require("http");
+const AICostTrackerService = require("./services/AICostTrackerService");
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -535,6 +536,7 @@ class URLProcessor {
         ],
         temperature: 0.1,
       });
+      AICostTrackerService.trackOpenAI("gpt-4.1-nano", "validate_and_extract", completion);
       console.log(completion.choices[0].message);
       let content = completion.choices[0].message.content.trim();
 
