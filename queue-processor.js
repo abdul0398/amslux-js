@@ -127,10 +127,10 @@ class URLProcessor {
       this.restartingBrowser = true;
 
       const uptime = Math.round(
-        (Date.now() - this.browserStartTime) / 1000 / 60
+        (Date.now() - this.browserStartTime) / 1000 / 60,
       ); // minutes
       console.log(
-        `🔄 Restarting browser after ${uptime} minutes uptime and ${this.urlsProcessedSinceRestart} URLs processed`
+        `🔄 Restarting browser after ${uptime} minutes uptime and ${this.urlsProcessedSinceRestart} URLs processed`,
       );
 
       try {
@@ -217,7 +217,7 @@ class URLProcessor {
         END,
         created_at ASC
       LIMIT ${Number(limit)}
-      `
+      `,
       );
 
       if (rows.length === 0) {
@@ -256,13 +256,13 @@ class URLProcessor {
 
       this.apiPauseUntil = Date.now() + retryAfter;
       console.log(
-        `⏸️ API paused until: ${new Date(this.apiPauseUntil).toLocaleString()}`
+        `⏸️ API paused until: ${new Date(this.apiPauseUntil).toLocaleString()}`,
       );
 
       // Double the delay for next time (exponential backoff)
       this.apiRetryDelay = Math.min(
         this.apiRetryDelay * 2,
-        this.maxApiRetryDelay
+        this.maxApiRetryDelay,
       );
 
       return false;
@@ -297,7 +297,9 @@ class URLProcessor {
     let shouldRetry = false;
 
     try {
-      console.log(`🔄 Processing URL ${id}: ${url} (Attempt ${retryCount + 1})`);
+      console.log(
+        `🔄 Processing URL ${id}: ${url} (Attempt ${retryCount + 1})`,
+      );
       await this.updateUrlStatus(id, "processing");
 
       let result;
@@ -312,7 +314,7 @@ class URLProcessor {
         await page.setUserAgent(
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/124.0.0.0 Safari/537.36"
+            "Chrome/124.0.0.0 Safari/537.36",
         );
         result = await this.scrapeUrl(page, url, id);
       }
@@ -337,26 +339,39 @@ class URLProcessor {
           this.urlsProcessedSinceRestart++;
         } else {
           await this.updateUrlStatus(id, "failed");
-          console.log(`❌ URL ${id}: save returned false (missing title or data)`);
+          console.log(
+            `❌ URL ${id}: save returned false (missing title or data)`,
+          );
         }
       } else {
         await this.updateUrlStatus(id, "failed", { is_valid: 0 });
         console.log(`❌ URL ${id} is not a valid product page`);
       }
     } catch (error) {
-      console.error(`Error processing URL ${id} (Attempt ${retryCount + 1}):`, error.message);
+      console.error(
+        `Error processing URL ${id} (Attempt ${retryCount + 1}):`,
+        error.message,
+      );
 
       if (retryCount < this.maxRetries) {
         // Signal finally to skip currentJobs-- so the retry call can claim the slot
         shouldRetry = true;
-        console.log(`🔄 Retrying URL ${id} in ${this.retryDelay / 1000} seconds...`);
+        console.log(
+          `🔄 Retrying URL ${id} in ${this.retryDelay / 1000} seconds...`,
+        );
       } else {
         await this.updateUrlStatus(id, "failed");
-        console.log(`❌ Failed to process URL ${id} after ${retryCount + 1} attempts`);
+        console.log(
+          `❌ Failed to process URL ${id} after ${retryCount + 1} attempts`,
+        );
       }
     } finally {
       if (page) {
-        try { await page.close(); } catch (e) { console.log("Error closing page:", e.message); }
+        try {
+          await page.close();
+        } catch (e) {
+          console.log("Error closing page:", e.message);
+        }
       }
       // Only release the job slot when NOT handing off to a retry.
       // The retry call will manage its own slot via currentJobs++ at its start.
@@ -395,7 +410,7 @@ class URLProcessor {
         totalMemoryMB: Math.round(totalMemory / 1024 / 1024),
         pageCount: pages.length,
         uptimeMinutes: Math.round(
-          (Date.now() - this.browserStartTime) / 1000 / 60
+          (Date.now() - this.browserStartTime) / 1000 / 60,
         ),
       };
     } catch (error) {
@@ -407,7 +422,7 @@ class URLProcessor {
     const stats = await this.getBrowserMemoryUsage();
     if (stats) {
       console.log(
-        `📊 Browser Stats: ${stats.totalMemoryMB}MB memory, ${stats.pageCount} pages, ${stats.uptimeMinutes}min uptime, ${this.urlsProcessedSinceRestart} URLs processed`
+        `📊 Browser Stats: ${stats.totalMemoryMB}MB memory, ${stats.pageCount} pages, ${stats.uptimeMinutes}min uptime, ${this.urlsProcessedSinceRestart} URLs processed`,
       );
     }
   }
@@ -475,16 +490,16 @@ class URLProcessor {
   async validateAndExtractProductData(html) {
     try {
       const completion = await openai.chat.completions.create({
-        model: "gpt-4.1-nano",
+        model: "gpt-4.1-mini",
         messages: [
           {
             role: "system",
             content: `
               You are an expert at identifying and extracting product data from website content.
               
-              First, determine if this is a legitimate product page for any purchasable item or listing (e.g. watches, jewelry, clothing, shoes, cars, boats, yachts, real estate, electronics, furniture, art, or any other product/service).
+              First, determine if this page contains a single identifiable listing with a title and some details — this includes products, services, rentals, restaurants, hotels, experiences, events, or anything that can be booked, purchased, or enquired about.
 
-              If it's NOT a valid product page (error page, category listing, homepage, blog post, etc.), return:
+              If it's NOT a valid listing (e.g. generic homepage, pure category/search results page with no single item focus, 404 error page, or plain blog article with nothing to purchase/book), return:
               {"isValid": false, "reason": "brief reason why not valid"}
               
               If it IS a valid product page, extract the data and return:
@@ -529,7 +544,11 @@ class URLProcessor {
         ],
         temperature: 0.1,
       });
-      AICostTrackerService.trackOpenAI("gpt-4.1-nano", "validate_and_extract", completion);
+      AICostTrackerService.trackOpenAI(
+        "gpt-4.1-nano",
+        "validate_and_extract",
+        completion,
+      );
       console.log(completion.choices[0].message);
       let content = completion.choices[0].message.content.trim();
 
@@ -576,7 +595,7 @@ class URLProcessor {
     // Download images locally first
     const downloadedImages = await this.downloadImages(
       productData.images,
-      urlId
+      urlId,
     );
     productData.downloadedImages = downloadedImages;
 
@@ -605,7 +624,7 @@ class URLProcessor {
             fileName: fileName,
           });
           console.log(
-            `📥 Downloaded image ${i + 1}/${imageUrls.length}: ${fileName}`
+            `📥 Downloaded image ${i + 1}/${imageUrls.length}: ${fileName}`,
           );
         }
       } catch (error) {
@@ -672,15 +691,8 @@ class URLProcessor {
   }
 
   async createCategoryService(urlId, productData) {
-    const {
-      title,
-      price,
-      location,
-      size,
-      description,
-      tag,
-      downloadedImages,
-    } = productData;
+    const { title, price, location, size, description, tag, downloadedImages } =
+      productData;
 
     // Extract price information
     const extractedPrice = this.extractPrice(price);
@@ -688,7 +700,7 @@ class URLProcessor {
     // Get the source URL and category info from product_urls table
     const [urlRow] = await this.db.execute(
       "SELECT url, category, subcategory_id FROM product_urls WHERE id = ?",
-      [urlId]
+      [urlId],
     );
     const sourceUrl = urlRow.length > 0 ? urlRow[0].url : null;
     const categoryId = urlRow.length > 0 ? urlRow[0].category : null;
@@ -697,7 +709,7 @@ class URLProcessor {
     // Check if similar service already exists
     const [existing] = await this.db.execute(
       "SELECT id FROM category_services WHERE tag = ? AND title = ?",
-      [tag, title]
+      [tag, title],
     );
 
     if (existing.length > 0) {
@@ -710,8 +722,8 @@ class URLProcessor {
       downloadedImages && downloadedImages.length > 0
         ? downloadedImages[0].localPath
         : productData.images && productData.images.length > 0
-        ? productData.images[0]
-        : null;
+          ? productData.images[0]
+          : null;
 
     const safeDescription = description || `High-quality ${tag} product`;
     const about_description =
@@ -741,7 +753,7 @@ class URLProcessor {
         location,
         size,
         sourceUrl,
-      ]
+      ],
     );
 
     const serviceId = result.insertId;
@@ -754,7 +766,7 @@ class URLProcessor {
     console.log(
       `📦 Created category service for: ${title} (${tag}) with ${
         downloadedImages ? downloadedImages.length : 0
-      } images`
+      } images`,
     );
 
     return true;
@@ -769,12 +781,12 @@ class URLProcessor {
             service_id, image_url, created_at, updated_at
           ) VALUES (?, ?, NOW(), NOW())
         `,
-          [serviceId.toString(), image.localPath]
+          [serviceId.toString(), image.localPath],
         );
       }
 
       console.log(
-        `🖼️  Saved ${downloadedImages.length} images to gallery for service ${serviceId}`
+        `🖼️  Saved ${downloadedImages.length} images to gallery for service ${serviceId}`,
       );
     } catch (error) {
       console.error("Error saving image gallery:", error.message);
@@ -851,7 +863,7 @@ class URLProcessor {
         "nav.breadcrumb, .breadcrumbs, " +
         "footer, .footer-content, " +
         ".sidebar-ads, .recommended, .suggestions, " +
-        ".comments-section, .user-comments"
+        ".comments-section, .user-comments",
     ).remove();
 
     $("img").each((_, el) => {
@@ -881,7 +893,7 @@ class URLProcessor {
     });
 
     $(
-      '[style*="display:none"], [style*="display: none"], [hidden], .hidden, .sr-only, .visually-hidden'
+      '[style*="display:none"], [style*="display: none"], [hidden], .hidden, .sr-only, .visually-hidden',
     ).remove();
 
     $("nav").each((_, el) => {
@@ -944,7 +956,7 @@ class URLProcessor {
               cls.includes("data") ||
               cls.includes("value") ||
               cls.includes("villa") ||
-              cls.includes("house")
+              cls.includes("house"),
           );
 
         if (relevantClasses.length > 0) {
@@ -964,7 +976,7 @@ class URLProcessor {
               (img, index) =>
                 `<div class="image-${index}">[${img.type.toUpperCase()}] ${
                   img.url
-                } (${img.alt || "No alt text"}) - Context: ${img.context}</div>`
+                } (${img.alt || "No alt text"}) - Context: ${img.context}</div>`,
             )
             .join("\n")}
         </div>
@@ -1039,7 +1051,7 @@ class URLProcessor {
     });
 
     $(
-      "[data-bg], [data-background], [data-src], [data-image], [data-lazy]"
+      "[data-bg], [data-background], [data-src], [data-image], [data-lazy]",
     ).each((_, el) => {
       const $el = $(el);
       const dataBg =
