@@ -482,9 +482,9 @@ class URLProcessor {
             content: `
               You are an expert at identifying and extracting product data from website content.
               
-              First, determine if this is a legitimate product page (for items like watches, jewelry, clothing, shoes, cars, real estate, etc.).
-              
-              If it's NOT a valid product page (error page, category listing, blog, etc.), return:
+              First, determine if this is a legitimate product page for any purchasable item or listing (e.g. watches, jewelry, clothing, shoes, cars, boats, yachts, real estate, electronics, furniture, art, or any other product/service).
+
+              If it's NOT a valid product page (error page, category listing, homepage, blog post, etc.), return:
               {"isValid": false, "reason": "brief reason why not valid"}
               
               If it IS a valid product page, extract the data and return:
