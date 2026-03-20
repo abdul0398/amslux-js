@@ -717,13 +717,11 @@ class URLProcessor {
       return true;
     }
 
-    // Use first downloaded image as primary image, fallback to original URL if no downloads
+    // Use first downloaded image as primary image, only local paths
     const primaryImageUrl =
       downloadedImages && downloadedImages.length > 0
         ? downloadedImages[0].localPath
-        : productData.images && productData.images.length > 0
-          ? productData.images[0]
-          : null;
+        : null;
 
     const safeDescription = description || `High-quality ${tag} product`;
     const about_description =
