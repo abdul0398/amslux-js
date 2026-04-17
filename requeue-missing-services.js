@@ -37,7 +37,12 @@ async function requeueMissingServices() {
 
     const [result] = await db.execute(
       `UPDATE product_urls
-       SET status = 'pending', updated_at = NOW()
+       SET status = 'pending',
+           is_crawled = 0,
+           is_parsed = 0,
+           is_valid = 0,
+           last_scrapped = NULL,
+           updated_at = NOW()
        WHERE id IN (${placeholders})`,
       ids,
     );
