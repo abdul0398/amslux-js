@@ -15,12 +15,12 @@ async function requeueMissingServices() {
   try {
     // Find scraped URLs from last 5 days that have no matching category_service
     const [rows] = await db.execute(`
-      SELECT pu.id, pu.url, pu.status
-      FROM product_urls pu
-      LEFT JOIN category_services cs ON cs.source_url = pu.url
-      WHERE pu.created_at >= DATE_SUB(NOW(), INTERVAL 5 DAY)
-        AND pu.status IN ('scraped', 'failed')
-        AND cs.id IS NULL
+     SELECT pu.id, pu.url, pu.status
+    FROM product_urls pu
+    LEFT JOIN category_services cs ON cs.source_url = pu.url
+    WHERE pu.created_at >= DATE_SUB(NOW(), INTERVAL 1 MONTH)
+    AND pu.status IN ('scraped', 'failed')
+    AND cs.id IS NULL;
     `);
 
     if (rows.length === 0) {
