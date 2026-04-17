@@ -706,14 +706,14 @@ class URLProcessor {
     const categoryId = urlRow.length > 0 ? urlRow[0].category : null;
     const subCategoryId = urlRow.length > 0 ? urlRow[0].subcategory_id : null;
 
-    // Check if similar service already exists
+    // Check if this URL was already scraped into a service
     const [existing] = await this.db.execute(
-      "SELECT id FROM category_services WHERE tag = ? AND title = ?",
-      [tag, title],
+      "SELECT id FROM category_services WHERE source_url = ?",
+      [sourceUrl],
     );
 
     if (existing.length > 0) {
-      console.log(`🔄 Service already exists for: ${title}`);
+      console.log(`🔄 Service already exists for URL: ${sourceUrl}`);
       return true;
     }
 
@@ -729,6 +729,14 @@ class URLProcessor {
         ? safeDescription.slice(0, 100) + "..."
         : safeDescription;
 
+    // Truncate string fields to fit column limits
+    const safeTitle = title ? title.slice(0, 255) : title;
+    const safeImageUrl = primaryImageUrl ? primaryImageUrl.slice(0, 255) : null;
+    const safeTag = tag ? tag.slice(0, 255) : tag;
+    const safeLocation = location ? location.slice(0, 255) : location;
+    const safeSize = size ? size.slice(0, 255) : size;
+    const safeSourceUrl = sourceUrl ? sourceUrl.slice(0, 2048) : sourceUrl;
+
     // Create new category service
     const [result] = await this.db.execute(
       `
@@ -741,16 +749,16 @@ class URLProcessor {
       [
         categoryId,
         subCategoryId,
-        title,
-        title,
+        safeTitle,
+        safeTitle,
         about_description,
         safeDescription,
-        primaryImageUrl,
-        tag,
+        safeImageUrl,
+        safeTag,
         extractedPrice,
-        location,
-        size,
-        sourceUrl,
+        safeLocation,
+        safeSize,
+        safeSourceUrl,
       ],
     );
 
@@ -779,7 +787,7 @@ class URLProcessor {
             service_id, image_url, created_at, updated_at
           ) VALUES (?, ?, NOW(), NOW())
         `,
-          [serviceId.toString(), image.localPath],
+          [serviceId.toString(), image.localPath ? image.localPath.slice(0, 255) : null],
         );
       }
 
